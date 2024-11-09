@@ -111,6 +111,7 @@
 //! }
 //! ```
 //!
+pub use events::LayerOutputSetting;
 pub use events::NewLayerShellSettings;
 pub use events::NewPopUpSettings;
 pub use waycrate_xkbkeycode::keyboard;
@@ -2429,14 +2430,12 @@ impl<T: 'static> WindowState<T> {
                                 exclusive_zone,
                                 margin,
                                 keyboard_interactivity,
-                                use_last_output,
                                 events_transparent,
+                                output_setting,
                             },
                             info,
                         )) => {
                             let pos = self.surface_pos();
-
-                            let mut output = pos.and_then(|p| self.units[p].wl_output.as_ref());
 
                             if self.last_wloutput.is_none()
                                 && self.outputs.len() > self.last_unit_index
@@ -2445,9 +2444,15 @@ impl<T: 'static> WindowState<T> {
                                     Some(self.outputs[self.last_unit_index].1.clone());
                             }
 
-                            if use_last_output {
-                                output = self.last_wloutput.as_ref();
-                            }
+                            let output = match output_setting {
+                                events::LayerOutputSetting::None => {
+                                    pos.and_then(|p| self.units[p].wl_output.as_ref()).cloned()
+                                }
+                                events::LayerOutputSetting::FollowLastOutput => {
+                                    self.last_wloutput.clone()
+                                }
+                                events::LayerOutputSetting::ChosenOutput(output) => Some(output),
+                            };
 
                             let wl_surface = wmcompositer.create_surface(&qh, ()); // and create a surface. if two or more,
                             let layer_shell = globals
@@ -2455,7 +2460,7 @@ impl<T: 'static> WindowState<T> {
                                 .unwrap();
                             let layer = layer_shell.get_layer_surface(
                                 &wl_surface,
-                                output,
+                                output.as_ref(),
                                 layer,
                                 self.namespace.clone(),
                                 &qh,
@@ -2509,7 +2514,7 @@ impl<T: 'static> WindowState<T> {
                                 fractional_scale,
                                 viewport,
                                 becreated: true,
-                                wl_output: output.cloned(),
+                                wl_output: output,
                                 binding: info,
                                 scale: 120,
                             });

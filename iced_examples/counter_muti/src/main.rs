@@ -7,10 +7,14 @@ use iced_layershell::actions::{IcedNewMenuSettings, MenuDirection};
 use iced_runtime::window::Action as WindowAction;
 use iced_runtime::{task, Action};
 
-use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings};
+use iced_layershell::reexport::{
+    Anchor, KeyboardInteractivity, Layer, LayerOutputSetting, NewLayerShellSettings,
+};
 use iced_layershell::settings::{LayerShellSettings, Settings, StartMode};
 use iced_layershell::to_layer_message;
 use iced_layershell::MultiApplication;
+
+use iced_wayland_subscriber::WaylandEvents;
 
 pub fn main() -> Result<(), iced_layershell::Error> {
     Counter::run(Settings {
@@ -57,6 +61,7 @@ enum Message {
     TextInput(String),
     Direction(WindowDirection),
     IcedEvent(Event),
+    Wayland(WaylandEvents),
 }
 
 impl Counter {
@@ -105,7 +110,10 @@ impl MultiApplication for Counter {
     }
 
     fn subscription(&self) -> iced::Subscription<Self::Message> {
-        event::listen().map(Message::IcedEvent)
+        iced::Subscription::batch([
+            event::listen().map(Message::IcedEvent),
+            iced_wayland_subscriber::listen().map(Message::Wayland),
+        ])
     }
 
     fn update(&mut self, message: Message) -> Command<Message> {
@@ -180,7 +188,7 @@ impl MultiApplication for Counter {
                     layer: Layer::Top,
                     margin: None,
                     keyboard_interactivity: KeyboardInteractivity::Exclusive,
-                    use_last_output: false,
+                    output_setting: LayerOutputSetting::None,
                     ..Default::default()
                 },
                 info: WindowInfo::Left,
@@ -193,12 +201,16 @@ impl MultiApplication for Counter {
                     layer: Layer::Top,
                     margin: None,
                     keyboard_interactivity: KeyboardInteractivity::Exclusive,
-                    use_last_output: false,
+                    output_setting: LayerOutputSetting::None,
                     ..Default::default()
                 },
                 info: WindowInfo::Right,
             }),
             Message::Close(id) => task::effect(Action::Window(WindowAction::Close(id))),
+            Message::Wayland(ev) => {
+                println!("wayland events: {ev:?}");
+                Command::none()
+            }
             _ => unreachable!(),
         }
     }
