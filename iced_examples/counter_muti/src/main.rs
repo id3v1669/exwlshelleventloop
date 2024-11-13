@@ -40,6 +40,7 @@ enum WindowInfo {
     Left,
     Right,
     PopUp,
+    TopBar,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -207,9 +208,19 @@ impl MultiApplication for Counter {
                 info: WindowInfo::Right,
             }),
             Message::Close(id) => task::effect(Action::Window(WindowAction::Close(id))),
-            Message::Wayland(ev) => {
-                println!("wayland events: {ev:?}");
-                Command::none()
+            Message::Wayland(WaylandEvents::OutputInsert(output)) => {
+                Command::done(Message::NewLayerShell {
+                    settings: NewLayerShellSettings {
+                        size: Some((0, 20)),
+                        exclusive_zone: None,
+                        anchor: Anchor::Top | Anchor::Right | Anchor::Left,
+                        layer: Layer::Top,
+                        margin: None,
+                        keyboard_interactivity: KeyboardInteractivity::Exclusive,
+                        output_setting: LayerOutputSetting::ChosenOutput(output),
+                    },
+                    info: WindowInfo::TopBar,
+                })
             }
             _ => unreachable!(),
         }
@@ -221,6 +232,9 @@ impl MultiApplication for Counter {
         }
         if let Some(WindowInfo::Right) = self.id_info(id) {
             return button("close right").on_press(Message::Close(id)).into();
+        }
+        if let Some(WindowInfo::TopBar) = self.id_info(id) {
+            return text("topbar").into();
         }
         if let Some(WindowInfo::PopUp) = self.id_info(id) {
             return container(button("close PopUp").on_press(Message::Close(id)))
