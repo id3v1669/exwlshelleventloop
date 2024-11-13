@@ -212,12 +212,13 @@ impl MultiApplication for Counter {
                 Command::done(Message::NewLayerShell {
                     settings: NewLayerShellSettings {
                         size: Some((0, 20)),
-                        exclusive_zone: None,
+                        exclusive_zone: Some(20),
                         anchor: Anchor::Top | Anchor::Right | Anchor::Left,
                         layer: Layer::Top,
                         margin: None,
-                        keyboard_interactivity: KeyboardInteractivity::Exclusive,
+                        keyboard_interactivity: KeyboardInteractivity::None,
                         output_setting: LayerOutputSetting::ChosenOutput(output),
+                        ..Default::default()
                     },
                     info: WindowInfo::TopBar,
                 })
@@ -234,7 +235,7 @@ impl MultiApplication for Counter {
             return button("close right").on_press(Message::Close(id)).into();
         }
         if let Some(WindowInfo::TopBar) = self.id_info(id) {
-            return text("topbar").into();
+            return text("hello here is topbar").into();
         }
         if let Some(WindowInfo::PopUp) = self.id_info(id) {
             return container(button("close PopUp").on_press(Message::Close(id)))

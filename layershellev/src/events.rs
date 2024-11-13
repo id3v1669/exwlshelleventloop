@@ -8,7 +8,7 @@ use wayland_client::{
     protocol::{
         wl_buffer::WlBuffer,
         wl_compositor::WlCompositor,
-        wl_output::{self, WlOutput},
+        wl_output::WlOutput,
         wl_pointer::{self, ButtonState, WlPointer},
         wl_shm::WlShm,
     },
@@ -71,7 +71,7 @@ pub enum LayerEvent<'a, T, Message> {
 /// This allow the new layershell can be selected on target output
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LayerOutputSetting {
-    ChosenOutput(wl_output::WlOutput),
+    ChosenOutput(String),
     FollowLastOutput,
     None,
 }

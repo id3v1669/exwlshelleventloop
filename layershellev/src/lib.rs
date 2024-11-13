@@ -1663,31 +1663,6 @@ impl<T> Dispatch<zxdg_output_v1::ZxdgOutputV1, ()> for WindowState<T> {
         _conn: &Connection,
         _qhandle: &QueueHandle<Self>,
     ) {
-        if state.is_with_target() && !state.init_finished {
-            let Some((_, xdg_info)) = state
-                .xdg_info_cache
-                .iter_mut()
-                .find(|(_, info)| info.zxdgoutput == *proxy)
-            else {
-                return;
-            };
-            match event {
-                zxdg_output_v1::Event::LogicalSize { width, height } => {
-                    xdg_info.logical_size = (width, height);
-                }
-                zxdg_output_v1::Event::LogicalPosition { x, y } => {
-                    xdg_info.position = (x, y);
-                }
-                zxdg_output_v1::Event::Name { name } => {
-                    xdg_info.name = name;
-                }
-                zxdg_output_v1::Event::Description { description } => {
-                    xdg_info.description = description;
-                }
-                _ => {}
-            };
-            return;
-        }
         let Some(index) = state.units.iter().position(|info| {
             info.zxdgoutput
                 .as_ref()
@@ -1695,23 +1670,34 @@ impl<T> Dispatch<zxdg_output_v1::ZxdgOutputV1, ()> for WindowState<T> {
         }) else {
             return;
         };
+        let Some((_, xdg_info_cached)) = state
+            .xdg_info_cache
+            .iter_mut()
+            .find(|(_, info)| info.zxdgoutput == *proxy)
+        else {
+            return;
+        };
         let info = &mut state.units[index];
         let xdg_info = info.zxdgoutput.as_mut().unwrap();
         let change_type = match event {
             zxdg_output_v1::Event::LogicalSize { width, height } => {
                 xdg_info.logical_size = (width, height);
+                xdg_info_cached.logical_size = (width, height);
                 XdgInfoChangedType::Size
             }
             zxdg_output_v1::Event::LogicalPosition { x, y } => {
                 xdg_info.position = (x, y);
+                xdg_info_cached.position = (x, y);
                 XdgInfoChangedType::Position
             }
             zxdg_output_v1::Event::Name { name } => {
-                xdg_info.name = name;
+                xdg_info.name = name.clone();
+                xdg_info_cached.name = name;
                 XdgInfoChangedType::Name
             }
             zxdg_output_v1::Event::Description { description } => {
-                xdg_info.description = description;
+                xdg_info.description = description.clone();
+                xdg_info_cached.description = description;
                 XdgInfoChangedType::Description
             }
             _ => {
@@ -1860,7 +1846,6 @@ impl<T: 'static> WindowState<T> {
                 // clear binded_output_name, it is not used anymore
             }
 
-            self.xdg_info_cache.clear();
             let binded_output = output.as_ref().map(|(output, _)| output);
             let binded_xdginfo = output.as_ref().map(|(_, xdginfo)| xdginfo);
 
@@ -2451,7 +2436,11 @@ impl<T: 'static> WindowState<T> {
                                 events::LayerOutputSetting::FollowLastOutput => {
                                     self.last_wloutput.clone()
                                 }
-                                events::LayerOutputSetting::ChosenOutput(output) => Some(output),
+                                events::LayerOutputSetting::ChosenOutput(output) => self
+                                    .xdg_info_cache
+                                    .iter()
+                                    .find(|(_, xdg_output_info)| xdg_output_info.name == output)
+                                    .map(|(output, _)| output.clone()),
                             };
 
                             let wl_surface = wmcompositer.create_surface(&qh, ()); // and create a surface. if two or more,
