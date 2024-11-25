@@ -1811,6 +1811,14 @@ impl<T: 'static> WindowState<T> {
 
         event_queue.blocking_dispatch(&mut self)?; // then make a dispatch
 
+        // xdg_info_cache needs to be populated for all scenarios in case of furter use of output_setting
+        // for NewLayerShellSettings. Otherwise output_setting won't be able to find the output.
+        for (_, output_display) in &self.outputs {
+            let zxdgoutput = xdg_output_manager.get_xdg_output(output_display, &qh, ());
+            self.xdg_info_cache
+                .push((output_display.clone(), ZxdgOutputInfo::new(zxdgoutput)));
+        }
+
         // do the step before, you get empty list
 
         // so it is the same way, to get surface detach to protocol, first get the shell, like wmbase
@@ -1829,11 +1837,6 @@ impl<T: 'static> WindowState<T> {
             let mut output = None;
 
             if let StartMode::TargetScreen(name) = self.start_mode.clone() {
-                for (_, output_display) in &self.outputs {
-                    let zxdgoutput = xdg_output_manager.get_xdg_output(output_display, &qh, ());
-                    self.xdg_info_cache
-                        .push((output_display.clone(), ZxdgOutputInfo::new(zxdgoutput)));
-                }
                 event_queue.blocking_dispatch(&mut self)?; // then make a dispatch
                 if let Some(cache) = self
                     .xdg_info_cache
