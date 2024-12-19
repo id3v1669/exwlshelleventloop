@@ -93,6 +93,8 @@ pub fn window_event(
                     key,
                     location,
                     modifiers,
+                    modified_key,
+                    physical_key,
                 },
             }
         })),

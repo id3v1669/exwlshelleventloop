@@ -493,7 +493,6 @@ async fn run_instance<A, E, C>(
                 run_action(
                     &application,
                     &mut compositor,
-                    &mut surface,
                     &mut cache,
                     &state,
                     &mut renderer,
@@ -627,7 +626,6 @@ pub(crate) fn update<A: Application, E: Executor>(
 pub(crate) fn run_action<A, C>(
     application: &A,
     compositor: &mut C,
-    surface: &mut C::Surface,
     cache: &mut user_interface::Cache,
     state: &State<A>,
     renderer: &mut A::Renderer,
@@ -645,7 +643,6 @@ pub(crate) fn run_action<A, C>(
 {
     use iced_core::widget::operation;
     use iced_runtime::clipboard;
-    use iced_runtime::window;
     use iced_runtime::window::Action as WinowAction;
     use iced_runtime::Action;
     match event {
@@ -700,12 +697,11 @@ pub(crate) fn run_action<A, C>(
             WinowAction::Screenshot(_id, channel) => {
                 let bytes = compositor.screenshot(
                     renderer,
-                    surface,
                     state.viewport(),
                     state.background_color(),
                     &debug.overlay(),
                 );
-                let _ = channel.send(window::Screenshot::new(
+                let _ = channel.send(iced::window::Screenshot::new(
                     bytes,
                     state.physical_size(),
                     state.viewport().scale_factor(),

@@ -307,7 +307,8 @@ impl canvas::Program<Message> for KeyboardView {
         event: canvas::Event,
         bounds: Rectangle,
         cursor: Cursor,
-    ) -> (Status, Option<Message>) {
+    //) -> (Status, Option<Message>) {
+    ) -> std::option::Option<iced::widget::Action<Message>> {
         update_keyboard(state, bounds.width, bounds.height);
         let Event::Mouse(mouse_event) = event else {
             return (Status::Ignored, None);

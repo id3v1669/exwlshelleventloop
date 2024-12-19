@@ -669,7 +669,6 @@ pub(crate) fn run_action<A, C>(
 {
     use iced_core::widget::operation;
     use iced_runtime::clipboard;
-    use iced_runtime::window;
     use iced_runtime::window::Action as WinowAction;
     //let mut customactions = Vec::new();
     match action {
@@ -732,12 +731,11 @@ pub(crate) fn run_action<A, C>(
                     };
                     let bytes = compositor.screenshot(
                         &mut window.renderer,
-                        &mut window.surface,
                         window.state.viewport(),
                         window.state.background_color(),
                         &debug.overlay(),
                     );
-                    let _ = channel.send(window::Screenshot::new(
+                    let _ = channel.send(iced::window::Screenshot::new(
                         bytes,
                         window.state.physical_size(),
                         window.state.viewport().scale_factor(),
