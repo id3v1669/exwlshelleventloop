@@ -67,13 +67,12 @@ rwh_05 = { package = "raw-window-handle", version = "0.5.2", features = [
 ] }
 rwh_06 = { package = "raw-window-handle", version = "0.6", features = ["std"] }
 
-iced = "0.13"
-iced_runtime = { version = "0.13", features = ["multi-window"] }
-#iced_style = "0.13"
-iced_core = "0.13"
-iced_renderer = "0.13"
-iced_futures = "0.13"
-iced_graphics = "0.13"
+iced = { git = "https://github.com/iced-rs/iced.git", rev = "f2c9b6b2ffc50d67d9789e77cb55eeb2a0ebe470" }
+iced_runtime = { git = "https://github.com/iced-rs/iced.git", rev = "f2c9b6b2ffc50d67d9789e77cb55eeb2a0ebe470", features = ["multi-window"] }
+iced_core = { git = "https://github.com/iced-rs/iced.git", rev = "f2c9b6b2ffc50d67d9789e77cb55eeb2a0ebe470" }
+iced_renderer = { git = "https://github.com/iced-rs/iced.git", rev = "f2c9b6b2ffc50d67d9789e77cb55eeb2a0ebe470" }
+iced_futures = { git = "https://github.com/iced-rs/iced.git", rev = "f2c9b6b2ffc50d67d9789e77cb55eeb2a0ebe470" }
+iced_graphics = { git = "https://github.com/iced-rs/iced.git", rev = "f2c9b6b2ffc50d67d9789e77cb55eeb2a0ebe470" }
 window_clipboard = "0.4.1"
 
 bitflags = "2.6.0"
