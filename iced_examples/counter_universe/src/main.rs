@@ -7,14 +7,15 @@ use iced_exwlshell::actions::{IcedNewPopupSettings, IcedXdgWindowSettings};
 use iced_runtime::window::Action as WindowAction;
 use iced_runtime::{Action, task};
 
+use iced_exwlshell::daemon;
 use iced_exwlshell::reexport::{
     Anchor, KeyboardInteractivity, Layer, LayerSize, NewLayerShellSettings, OutputOption,
-    PixelSize, PopupGravity, WlShellType,
+    PixelSize, PopupGravity,
 };
 use iced_exwlshell::settings::{LayerShellSettings, Settings, StartMode};
 use iced_exwlshell::to_exwlshell_message;
-use iced_exwlshell::{NewShellInfo, daemon};
-use iced_wayland_subscriber::{OutputInfo, WaylandEvent};
+use iced_wayland_subscriber::shell::{ShellInfo, ShellType};
+use iced_wayland_subscriber::{OutputId, OutputInfo, output::OutputEvent};
 use wayland_client::Connection;
 
 pub fn main() -> Result<(), iced_exwlshell::Error> {
@@ -29,6 +30,9 @@ pub fn main() -> Result<(), iced_exwlshell::Error> {
     )
     .title(Counter::title)
     .subscription(Counter::subscription)
+    .on_new_shell(|info: ShellInfo| {
+        (info.shell == ShellType::SessionLock).then_some(Message::LockAppeared(info.window))
+    })
     .settings(Settings {
         layer_settings: LayerShellSettings {
             size: LayerSize::fill_width(400),
@@ -48,6 +52,8 @@ struct Counter {
     value: i32,
     text: String,
     ids: HashMap<iced::window::Id, WindowInfo>,
+    /// The bar opened for each output, so a retracted output closes its own.
+    bars: HashMap<OutputId, iced::window::Id>,
     connection: Connection,
 }
 
@@ -69,19 +75,12 @@ enum WindowDirection {
 }
 
 #[derive(Debug, Clone)]
+// `OutputInfo` wraps sctk's, which is large.
+#[allow(clippy::large_enum_variant)]
 enum WayEvent {
     OutputInsert(OutputInfo),
-    #[allow(unused)]
+    OutputRemoved(OutputId),
     Stop(String),
-}
-
-impl From<WaylandEvent> for WayEvent {
-    fn from(value: WaylandEvent) -> Self {
-        match value {
-            WaylandEvent::Stop(e) => WayEvent::Stop(e.to_string()),
-            WaylandEvent::OutputInsert(output) => WayEvent::OutputInsert(output),
-        }
-    }
 }
 
 #[to_exwlshell_message]
@@ -97,6 +96,7 @@ enum Message {
     Direction(WindowDirection),
     IcedEvent(Event),
     Wayland(WayEvent),
+    LockAppeared(Id),
 }
 
 impl Counter {
@@ -116,6 +116,7 @@ impl Counter {
             value: 0,
             text: text.to_string(),
             ids: HashMap::new(),
+            bars: HashMap::new(),
             connection,
         }
     }
@@ -133,6 +134,9 @@ impl Counter {
 
     fn remove_id(&mut self, id: iced::window::Id) {
         self.ids.remove(&id);
+        // A real unplug closes the surface compositor-side, so the bar can go
+        // without an `OutputEvent::Removed` ever arriving.
+        self.bars.retain(|_, bar| *bar != id);
     }
 
     fn namespace() -> String {
@@ -143,8 +147,20 @@ impl Counter {
         iced::Subscription::batch(vec![
             event::listen().map(Message::IcedEvent),
             iced::window::close_events().map(Message::WindowClosed),
-            iced_wayland_subscriber::listen(self.connection.clone())
-                .map(|message| Message::Wayland(message.into())),
+            iced_wayland_subscriber::output::listen(self.connection.clone()).filter_map(|event| {
+                match event {
+                    OutputEvent::Insert(output) => {
+                        Some(Message::Wayland(WayEvent::OutputInsert(output)))
+                    }
+                    OutputEvent::Stop(error) => {
+                        Some(Message::Wayland(WayEvent::Stop(error.to_string())))
+                    }
+                    OutputEvent::Removed(output) => Some(Message::Wayland(
+                        WayEvent::OutputRemoved(OutputId::from(&output)),
+                    )),
+                    OutputEvent::Changed(_) => None,
+                }
+            }),
         ])
     }
 
@@ -189,8 +205,22 @@ impl Counter {
                 }
                 Command::none()
             }
-            Message::Wayland(WayEvent::OutputInsert(OutputInfo { wl_output, .. })) => {
+            Message::Wayland(WayEvent::Stop(error)) => {
+                eprintln!("output subscription stopped: {error}");
+                Command::none()
+            }
+            Message::Wayland(WayEvent::OutputRemoved(output)) => {
+                let Some(id) = self.bars.remove(&output) else {
+                    return Command::none();
+                };
+                iced_runtime::task::effect(Action::Window(WindowAction::Close(id)))
+            }
+            Message::Wayland(WayEvent::OutputInsert(output)) => {
+                let output_id = OutputId::from(&output);
                 let id = iced::window::Id::unique();
+                // Keyed by output so the bar can be closed again if the
+                // subscription retracts that output.
+                self.bars.insert(output_id, id);
                 self.ids.insert(id, WindowInfo::TopBar);
                 Command::done(Message::NewLayerShell {
                     settings: NewLayerShellSettings {
@@ -198,7 +228,7 @@ impl Counter {
                         layer: Layer::Top,
                         exclusive_zone: Some(30),
                         size: LayerSize::fill_width(30),
-                        output_option: OutputOption::Output(wl_output),
+                        output_option: OutputOption::GlobalName(output_id.0),
                         ..Default::default()
                     },
                     id,
@@ -261,11 +291,9 @@ impl Counter {
                 task
             }
             Message::Close(id) => task::effect(Action::Window(WindowAction::Close(id))),
-            // NOTE: we use it to receive windows
-            Message::NewShell(NewShellInfo { id, shell }) => {
-                if matches!(shell, WlShellType::SessionLock) {
-                    self.ids.insert(id, WindowInfo::Lock);
-                }
+            // NOTE: this is how we learn about windows the runtime created.
+            Message::LockAppeared(id) => {
+                self.ids.insert(id, WindowInfo::Lock);
                 Command::none()
             }
             _ => unreachable!(),

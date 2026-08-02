@@ -1,13 +1,13 @@
-use exwlshellev::DispatchMessage;
 use exwlshellev::keyboard::ModifiersState;
 use exwlshellev::reexport::wayland_client::{ButtonState, KeyState, WEnum, WlRegion};
 use exwlshellev::xkb_keyboard::KeyEvent as LayerShellKeyEvent;
+use exwlshellev::{DispatchMessage, WindowState};
 use iced_core::mouse;
 use iced_runtime::Action;
 
 use iced_core::keyboard::Modifiers as IcedModifiers;
 
-use crate::output::OutputInfo;
+use iced_wayland_subscriber::OutputInfo;
 
 fn from_u32_to_icedmouse(code: u32) -> mouse::Button {
     match code {
@@ -112,8 +112,8 @@ pub enum IcedWlShellEvent<Message> {
     NormalDispatch,
 }
 
-impl From<&DispatchMessage> for WindowEvent {
-    fn from(value: &DispatchMessage) -> Self {
+impl WindowEvent {
+    pub(crate) fn from_dispatch<T>(value: &DispatchMessage, ev: &WindowState<T>) -> Self {
         match value {
             DispatchMessage::RequestRefresh { .. } => WindowEvent::Refresh,
             DispatchMessage::Closed => WindowEvent::Closed,
@@ -201,7 +201,11 @@ impl From<&DispatchMessage> for WindowEvent {
                 }
             }
             DispatchMessage::Ime(ime) => WindowEvent::Ime(ime.clone()),
-            DispatchMessage::OutputChanged(_) => WindowEvent::OutputChanged(None),
+            DispatchMessage::OutputChanged(wl_output) => WindowEvent::OutputChanged(
+                wl_output
+                    .as_ref()
+                    .and_then(|output| ev.get_output_info_of(output)),
+            ),
         }
     }
 }

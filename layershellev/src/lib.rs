@@ -217,6 +217,7 @@ use calloop::{
 use calloop_wayland_source::WaylandSource;
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::sync::Arc;
 
 use std::fmt::Formatter;
 use std::time::Duration;
@@ -306,6 +307,14 @@ enum Shell {
     PopUp((XdgPopup, XdgSurface)),
     XdgTopLevel((XdgToplevel, XdgSurface, Option<ZxdgToplevelDecorationV1>)),
     InputPanel(#[allow(unused)] ZwpInputPanelSurfaceV1),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WlShellType {
+    LayerShell,
+    PopUp,
+    XdgTopLevel,
+    InputPanel,
 }
 
 impl PartialEq<ZwlrLayerSurfaceV1> for Shell {
@@ -400,8 +409,13 @@ impl<T> WindowStateUnitBuilder<T> {
             inner: WindowStateUnit {
                 id,
                 qh,
-                display,
-                wl_surface,
+                window: Arc::new(WindowWrapper {
+                    id,
+                    display,
+                    wl_surface,
+                    viewport: None,
+                    toplevel: shell.top_level(),
+                }),
                 wmcompositor,
                 shell,
                 parent: None,
@@ -410,8 +424,7 @@ impl<T> WindowStateUnitBuilder<T> {
                 layer_size: LayerSize::FILL,
                 buffer: Default::default(),
                 fractional_scale: Default::default(),
-                viewport: Default::default(),
-                wl_output: Default::default(),
+                wl_outputs: Default::default(),
                 binding: Default::default(),
                 becreated: Default::default(),
                 configured,
@@ -447,7 +460,9 @@ impl<T> WindowStateUnitBuilder<T> {
     }
 
     fn viewport(mut self, viewport: Option<WpViewport>) -> Self {
-        self.inner.viewport = viewport;
+        Arc::get_mut(&mut self.inner.window)
+            .expect("the window is only shared once the unit is built")
+            .viewport = viewport;
         self
     }
 
@@ -462,7 +477,7 @@ impl<T> WindowStateUnitBuilder<T> {
     }
 
     fn wl_output(mut self, wl_output: Option<WlOutput>) -> Self {
-        self.inner.wl_output = wl_output;
+        self.inner.wl_outputs = wl_output.into_iter().collect();
         self
     }
 
@@ -507,8 +522,9 @@ struct WindowStateUnitRequestFlag {
 pub struct WindowStateUnit<T> {
     id: id::Id,
     qh: QueueHandle<WindowState<T>>,
-    display: WlDisplay,
-    wl_surface: WlSurface,
+    /// Shared because the renderer holds this surface too. Wayland proxies are
+    /// not refcounted, so destroying it here would leave the renderer a dead one.
+    window: Arc<WindowWrapper>,
     wmcompositor: WlCompositor,
     size: (u32, u32),
     /// Only meaningful for LayerShell
@@ -519,8 +535,7 @@ pub struct WindowStateUnit<T> {
     shell: Shell,
     parent: Option<id::Id>,
     fractional_scale: Option<WpFractionalScaleV1>,
-    viewport: Option<WpViewport>,
-    wl_output: Option<WlOutput>,
+    wl_outputs: Vec<WlOutput>,
     effect: Option<ExtBackgroundEffectSurfaceV1>,
     binding: Option<T>,
     becreated: bool,
@@ -537,6 +552,23 @@ pub struct WindowStateUnit<T> {
     present_available_state: PresentAvailableState,
 }
 
+/// wayland-rs sends nothing on drop.
+/// A destructor request has to be issued, so every object the unit owns is released.
+impl<T> Drop for WindowStateUnit<T> {
+    fn drop(&mut self) {
+        self.shell.destroy();
+        if let Some(buffer) = &self.buffer {
+            buffer.destroy();
+        }
+        if let Some(scale) = &self.fractional_scale {
+            scale.destroy();
+        }
+        if let Some(effect) = &self.effect {
+            effect.destroy();
+        }
+    }
+}
+
 impl<T> WindowStateUnit<T> {
     /// get the WindowState id
     pub fn id(&self) -> id::Id {
@@ -544,7 +576,7 @@ impl<T> WindowStateUnit<T> {
     }
 
     pub fn try_set_viewport_destination(&self, width: i32, height: i32) -> Option<()> {
-        let viewport = self.viewport.as_ref()?;
+        let viewport = self.window.viewport.as_ref()?;
         // (-1, -1) unsets the destination
         if (width, height) != (-1, -1) && (width <= 0 || height <= 0) {
             log::warn!(
@@ -560,19 +592,23 @@ impl<T> WindowStateUnit<T> {
     }
 
     pub fn try_set_viewport_source(&self, x: f64, y: f64, width: f64, height: f64) -> Option<()> {
-        let viewport = self.viewport.as_ref()?;
+        let viewport = self.window.viewport.as_ref()?;
         viewport.set_source(x, y, width, height);
         Some(())
     }
 
-    /// gen the WindowState [WindowWrapper]
-    pub fn gen_wrapper(&self) -> WindowWrapper {
-        WindowWrapper {
-            id: self.id,
-            display: self.display.clone(),
-            wl_surface: self.wl_surface.clone(),
-            viewport: self.viewport.clone(),
-            toplevel: self.shell.top_level(),
+    /// Share this window [`WindowWrapper`], keeping its surface alive for as
+    /// long as the caller holds it.
+    pub fn gen_wrapper(&self) -> Arc<WindowWrapper> {
+        self.window.clone()
+    }
+
+    pub fn wl_shell_type(&self) -> WlShellType {
+        match self.shell {
+            Shell::LayerShell(_) => WlShellType::LayerShell,
+            Shell::PopUp(_) => WlShellType::PopUp,
+            Shell::XdgTopLevel(_) => WlShellType::XdgTopLevel,
+            Shell::InputPanel(_) => WlShellType::InputPanel,
         }
     }
 }
@@ -580,7 +616,7 @@ impl<T> WindowStateUnit<T> {
     #[inline]
     pub fn raw_window_handle_rwh_06(&self) -> Result<rwh_06::RawWindowHandle, rwh_06::HandleError> {
         Ok(rwh_06::WaylandWindowHandle::new({
-            let ptr = self.wl_surface.id().as_ptr();
+            let ptr = self.window.wl_surface.id().as_ptr();
             std::ptr::NonNull::new(ptr as *mut _).expect("wl_surface will never be null")
         })
         .into())
@@ -591,7 +627,7 @@ impl<T> WindowStateUnit<T> {
         &self,
     ) -> Result<rwh_06::RawDisplayHandle, rwh_06::HandleError> {
         Ok(rwh_06::WaylandDisplayHandle::new({
-            let ptr = self.display.id().as_ptr();
+            let ptr = self.window.display.id().as_ptr();
             std::ptr::NonNull::new(ptr as *mut _).expect("wl_proxy should never be null")
         })
         .into())
@@ -669,7 +705,7 @@ impl<T: 'static> WindowStateUnit<T> {
                     region.destroy();
                 }
             }
-            self.wl_surface.commit();
+            self.window.wl_surface.commit();
         }
     }
 }
@@ -677,12 +713,19 @@ impl<T: 'static> WindowStateUnit<T> {
 impl<T> WindowStateUnit<T> {
     /// get the wl surface from WindowState
     pub fn get_wlsurface(&self) -> &WlSurface {
-        &self.wl_surface
+        &self.window.wl_surface
     }
 
     /// output this surface is displayed on from compositor through `wl_surface::enter`
+    ///
+    /// A surface may overlap several outputs, this is the first one it entered.
     pub fn get_wloutput(&self) -> Option<&WlOutput> {
-        self.wl_output.as_ref()
+        self.wl_outputs.first()
+    }
+
+    /// every output this surface overlaps
+    pub fn get_wloutputs(&self) -> &[WlOutput] {
+        &self.wl_outputs
     }
 
     /// last requested anchor for surface
@@ -713,7 +756,7 @@ impl<T> WindowStateUnit<T> {
         layer_shell.set_size(width, height);
         self.anchor = anchor;
         self.layer_size = size;
-        self.wl_surface.commit();
+        self.window.wl_surface.commit();
     }
 
     /// set the anchor of the current unit. please take the simple.rs as reference
@@ -725,7 +768,7 @@ impl<T> WindowStateUnit<T> {
     pub fn set_margin(&self, (top, right, bottom, left): (i32, i32, i32, i32)) {
         if let Shell::LayerShell(layer_shell) = &self.shell {
             layer_shell.set_margin(top, right, bottom, left);
-            self.wl_surface.commit();
+            self.window.wl_surface.commit();
         }
     }
 
@@ -733,7 +776,7 @@ impl<T> WindowStateUnit<T> {
     pub fn set_layer(&self, layer: Layer) {
         if let Shell::LayerShell(layer_shell) = &self.shell {
             layer_shell.set_layer(layer);
-            self.wl_surface.commit();
+            self.window.wl_surface.commit();
         }
     }
 
@@ -753,7 +796,7 @@ impl<T> WindowStateUnit<T> {
         if let Shell::LayerShell(layer_shell) = &self.shell {
             warn_if_exclusive_zone_ignored(zone, self.get_effective_anchor());
             layer_shell.set_exclusive_zone(zone);
-            self.wl_surface.commit();
+            self.window.wl_surface.commit();
         }
     }
 
@@ -761,7 +804,7 @@ impl<T> WindowStateUnit<T> {
     pub fn set_keyboard_interactivity(&self, keyboard_interactivity: KeyboardInteractivity) {
         if let Shell::LayerShell(layer_shell) = &self.shell {
             layer_shell.set_keyboard_interactivity(keyboard_interactivity);
-            self.wl_surface.commit();
+            self.window.wl_surface.commit();
         }
     }
 
@@ -791,10 +834,11 @@ impl<T> WindowStateUnit<T> {
     /// this function will refresh whole surface. it will reattach the buffer, and damage whole,
     /// and final commit
     pub fn refresh(&self) {
-        self.wl_surface.attach(self.buffer.as_ref(), 0, 0);
-        self.wl_surface
+        self.window.wl_surface.attach(self.buffer.as_ref(), 0, 0);
+        self.window
+            .wl_surface
             .damage(0, 0, self.size.0 as i32, self.size.1 as i32);
-        self.wl_surface.commit();
+        self.window.wl_surface.commit();
     }
 
     pub fn scale_u32(&self) -> u32 {
@@ -892,7 +936,8 @@ impl<T: 'static> WindowStateUnit<T> {
         match self.present_available_state {
             PresentAvailableState::Taken => {
                 self.present_available_state = PresentAvailableState::Requested;
-                self.wl_surface
+                self.window
+                    .wl_surface
                     .frame(&self.qh, (self.id, PresentAvailableState::Available));
             }
             PresentAvailableState::Requested | PresentAvailableState::Available => {}
@@ -1064,6 +1109,20 @@ impl<T> WindowState<T> {
         self.button_serial.take().or(self.enter_serial)
     }
 
+    /// Whether [`Self::remove_shell`] would actually remove unit
+    fn can_remove_shell(&self, id: id::Id) -> bool {
+        self.units
+            .iter()
+            .any(|unit| unit.id == id && unit.becreated)
+    }
+
+    /// Drop a pending close request, so it is not retried on every iteration
+    fn clear_close_request(&mut self, id: id::Id) {
+        if let Some(unit) = self.units.iter_mut().find(|unit| unit.id == id) {
+            unit.request_flag.close = false;
+        }
+    }
+
     /// remove a shell, destroy the surface
     fn remove_shell(&mut self, id: id::Id) -> Option<()> {
         let index = self
@@ -1071,12 +1130,6 @@ impl<T> WindowState<T> {
             .iter()
             .position(|unit| unit.id == id && unit.becreated)?;
 
-        self.units[index].shell.destroy();
-        self.units[index].wl_surface.destroy();
-
-        if let Some(buffer) = self.units[index].buffer.as_ref() {
-            buffer.destroy()
-        }
         self.units.remove(index);
         Some(())
     }
@@ -1140,7 +1193,7 @@ impl<T> WindowState<T> {
     }
 
     fn push_window(&mut self, window_state_unit: WindowStateUnit<T>) {
-        let surface = window_state_unit.wl_surface.clone();
+        let surface = window_state_unit.window.wl_surface.clone();
         self.units.push(window_state_unit);
         // new created surface will be current_surface.
         self.update_current_surface(Some(surface));
@@ -1154,6 +1207,16 @@ pub struct WindowWrapper {
     wl_surface: WlSurface,
     pub viewport: Option<WpViewport>,
     pub toplevel: Option<XdgToplevel>,
+}
+
+impl Drop for WindowWrapper {
+    fn drop(&mut self) {
+        // Built on the surface, so it goes first.
+        if let Some(viewport) = &self.viewport {
+            viewport.destroy();
+        }
+        self.wl_surface.destroy();
+    }
 }
 
 /// Define the way layershell program is start
@@ -1198,7 +1261,7 @@ impl WindowWrapper {
 impl<T> WindowState<T> {
     /// gen the wrapper to the main window
     /// used to get display and etc
-    pub fn gen_mainwindow_wrapper(&self) -> WindowWrapper {
+    pub fn gen_mainwindow_wrapper(&self) -> Arc<WindowWrapper> {
         self.main_window().gen_wrapper()
     }
 
@@ -1627,6 +1690,14 @@ impl<T> WindowState<T> {
         self.output_state.as_ref()?.info(output)
     }
 
+    /// Find an output by its `wl_registry` global name.
+    pub fn output_by_global_name(&self, name: u32) -> Option<WlOutput> {
+        let state = self.output_state.as_ref()?;
+        state
+            .outputs()
+            .find(|output| state.info(output).is_some_and(|info| info.id == name))
+    }
+
     /// the output matching `name` (`HDMI-A-1` and such), if it is connected.
     pub fn output_by_name(&self, name: &str) -> Option<WlOutput> {
         let state = self.output_state.as_ref()?;
@@ -1637,7 +1708,7 @@ impl<T> WindowState<T> {
 
     /// the output info the surface `id` is currently displayed on
     pub fn get_output_info(&self, id: id::Id) -> Option<OutputInfo> {
-        let output = self.get_unit_with_id(id)?.wl_output.clone()?;
+        let output = self.get_unit_with_id(id)?.get_wloutput().cloned()?;
         self.get_output_info_of(&output)
     }
 
@@ -1645,14 +1716,14 @@ impl<T> WindowState<T> {
     pub fn current_surface_id(&self) -> Option<id::Id> {
         self.units
             .iter()
-            .find(|unit| Some(&unit.wl_surface) == self.current_surface.as_ref())
+            .find(|unit| Some(&unit.window.wl_surface) == self.current_surface.as_ref())
             .map(|unit| unit.id())
     }
 
     fn get_id_from_surface(&self, surface: &WlSurface) -> Option<id::Id> {
         self.units
             .iter()
-            .find(|unit| &unit.wl_surface == surface)
+            .find(|unit| &unit.window.wl_surface == surface)
             .map(|unit| unit.id())
     }
 
@@ -1680,14 +1751,14 @@ impl<T> WindowState<T> {
             let unit = self
                 .units
                 .iter()
-                .find(|unit| Some(&unit.wl_surface) == self.current_surface.as_ref());
+                .find(|unit| Some(&unit.window.wl_surface) == self.current_surface.as_ref());
             if let Some(unit) = unit {
                 self.message
                     .push((Some(unit.id), DispatchMessageInner::Focused(unit.id)));
                 self.last_unit_index = self
                     .outputs
                     .iter()
-                    .position(|output| Some(output) == unit.wl_output.as_ref())
+                    .position(|output| Some(output) == unit.get_wloutput())
                     .unwrap_or(0);
             }
         }
@@ -1746,7 +1817,7 @@ impl<T: 'static> OutputHandler for WindowState<T> {
         let affected: Vec<id::Id> = self
             .units
             .iter()
-            .filter(|unit| unit.wl_output.as_ref() == Some(&output))
+            .filter(|unit| unit.wl_outputs.contains(&output))
             .map(|unit| unit.id)
             .collect();
         for id in affected {
@@ -1771,14 +1842,16 @@ impl<T: 'static> OutputHandler for WindowState<T> {
         }
         self.outputs.retain(|o| o != &output);
 
-        let removed_states = self.units.extract_if(.., |unit| {
-            !unit.wl_surface.is_alive()
-                || unit
-                    .wl_output
-                    .as_ref()
-                    .is_some_and(|o| !self.outputs.iter().any(|storage| storage == o))
-        });
-        for deleled in removed_states.into_iter() {
+        let removed_states: Vec<_> = self
+            .units
+            .extract_if(.., |unit| {
+                !unit.window.wl_surface.is_alive() || unit.wl_outputs.as_slice() == [output.clone()]
+            })
+            .collect();
+        for unit in &mut self.units {
+            unit.wl_outputs.retain(|o| o != &output);
+        }
+        for deleled in removed_states {
             self.closed_ids.push(deleled.id);
         }
     }
@@ -1948,33 +2021,37 @@ impl<T> Dispatch<WlSurface, ()> for WindowState<T> {
         _conn: &Connection,
         _qhandle: &QueueHandle<Self>,
     ) {
+        let (wl_surface::Event::Enter { output } | wl_surface::Event::Leave { output }) = &event
+        else {
+            return;
+        };
+        if !state.outputs.contains(output) {
+            log::trace!(target: "layershellev", "ignoring {event:?} for an output this loop did not bind");
+            return;
+        }
+
         let Some(unit) = state
             .units
             .iter_mut()
-            .find(|unit| unit.wl_surface == *proxy)
+            .find(|unit| unit.window.wl_surface == *proxy)
         else {
             return;
         };
         let id = unit.id;
-        let changed = match event {
+        let previous = unit.get_wloutput().cloned();
+        match &event {
             wl_surface::Event::Enter { output } => {
-                let previous = unit.wl_output.replace(output);
-                previous.as_ref() != unit.wl_output.as_ref()
+                if !unit.wl_outputs.contains(output) {
+                    unit.wl_outputs.push(output.clone());
+                }
             }
-            wl_surface::Event::Leave { output }
-                if !matches!(unit.shell, Shell::LayerShell(..))
-                    && unit
-                        .wl_output
-                        .as_ref()
-                        .is_some_and(|i_output| i_output == &output) =>
-            {
-                unit.wl_output.take();
-                true
+            wl_surface::Event::Leave { output } if !matches!(unit.shell, Shell::LayerShell(..)) => {
+                unit.wl_outputs.retain(|o| o != output);
             }
-            _ => false,
-        };
-        if changed {
-            let output = unit.wl_output.clone();
+            _ => {}
+        }
+        if unit.get_wloutput() != previous.as_ref() {
+            let output = unit.get_wloutput().cloned();
             state
                 .message
                 .push((Some(id), DispatchMessageInner::OutputChanged(output)));
@@ -2647,6 +2724,9 @@ impl<T: 'static> WindowState<T> {
                             let wire_anchor = size.resolve_anchor(anchor);
                             let output = match output_type {
                                 OutputOption::Output(output) => Some(output),
+                                OutputOption::GlobalName(name) => {
+                                    window_state.output_by_global_name(name)
+                                }
                                 OutputOption::OutputName(name) => {
                                     window_state.output_by_name(&name)
                                 }
@@ -2940,6 +3020,9 @@ impl<T: 'static> WindowState<T> {
                         )) => {
                             let output = match output_type {
                                 OutputOption::Output(output) => Some(output),
+                                OutputOption::GlobalName(name) => {
+                                    window_state.output_by_global_name(name)
+                                }
                                 OutputOption::OutputName(name) => {
                                     window_state.output_by_name(&name)
                                 }
@@ -3010,12 +3093,20 @@ impl<T: 'static> WindowState<T> {
                 }
             }
 
-            let close_roots: Vec<id::Id> = window_state
+            let requested: Vec<id::Id> = window_state
                 .units
                 .iter()
                 .filter(|unit| unit.request_flag.close)
                 .map(WindowStateUnit::id)
                 .collect();
+            let mut close_roots: Vec<id::Id> = Vec::new();
+            for id in requested {
+                if window_state.can_remove_shell(id) {
+                    close_roots.push(id);
+                } else {
+                    window_state.clear_close_request(id);
+                }
+            }
             let mut to_be_closed_ids: Vec<id::Id> = Vec::new();
             for root in close_roots {
                 window_state.collect_descendants_then_self(root, &mut to_be_closed_ids);
@@ -3056,7 +3147,7 @@ impl<T: 'static> WindowState<T> {
                     let unit_id = unit.id;
                     let is_created = unit.becreated;
                     let scale_float = unit.scale_float();
-                    let wl_surface = unit.wl_surface.clone();
+                    let wl_surface = unit.window.wl_surface.clone();
                     if unit.buffer.is_none() && !window_state.use_display_handle {
                         let Ok(mut file) = tempfile::tempfile() else {
                             log::error!("Cannot create new file from tempfile");
@@ -3099,7 +3190,7 @@ impl<T: 'static> WindowState<T> {
                                 region.destroy();
                             }
                         }
-                        window_state.units[idx].wl_surface.commit();
+                        window_state.units[idx].window.wl_surface.commit();
                     }
                     window_state.handle_event(
                         &mut *event_handler,
@@ -3161,7 +3252,9 @@ impl<T: 'static> WindowState<T> {
                 looph.remove(*token);
             }
             window_state.to_remove_tokens.clear();
-            if let Some(VirtualKeyRelease { delay, time, key }) = window_state.to_be_released_key {
+            if let Some(VirtualKeyRelease { delay, time, key }) =
+                window_state.to_be_released_key.take()
+            {
                 looph
                     .insert_source(Timer::from_duration(delay), move |_, _, r_window_state| {
                         let state = &mut r_window_state.raw;

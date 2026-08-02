@@ -16,11 +16,12 @@ use iced_runtime::{Action, task};
 
 use iced_layershell::daemon;
 use iced_layershell::reexport::{
-    Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings, OutputOption, PopupGravity,
+    Anchor, KeyboardInteractivity, Layer, LayerSize, NewLayerShellSettings, OutputOption,
+    PixelSize, PopupGravity,
 };
 use iced_layershell::settings::{LayerShellSettings, Settings, StartMode};
 use iced_layershell::to_layer_message;
-use iced_wayland_subscriber::{OutputInfo, WaylandEvent};
+use iced_wayland_subscriber::{OutputInfo, output::OutputEvent};
 use wayland_client::Connection;
 
 pub fn main() -> Result<(), iced_layershell::Error> {
@@ -37,13 +38,13 @@ pub fn main() -> Result<(), iced_layershell::Error> {
     .subscription(Counter::subscription)
     .settings(Settings {
         layer_settings: LayerShellSettings {
-            size: Some((0, 400)),
+            size: LayerSize::fill_width(400),
             exclusive_zone: 400,
             anchor: Anchor::Bottom | Anchor::Left | Anchor::Right,
             start_mode: StartMode::AllScreens,
             ..Default::default()
         },
-        with_connection: Some(connection2),
+        with_connection: Some(connection2.into()),
         ..Default::default()
     })
     .run()
@@ -76,17 +77,7 @@ enum WindowDirection {
 #[derive(Debug, Clone)]
 enum WayEvent {
     OutputInsert(OutputInfo),
-    #[allow(unused)]
     Stop(String),
-}
-
-impl From<WaylandEvent> for WayEvent {
-    fn from(value: WaylandEvent) -> Self {
-        match value {
-            WaylandEvent::Stop(e) => WayEvent::Stop(e.to_string()),
-            WaylandEvent::OutputInsert(output) => WayEvent::OutputInsert(output),
-        }
-    }
 }
 
 #[to_layer_message(multi)]
@@ -148,8 +139,20 @@ impl Counter {
         iced::Subscription::batch(vec![
             event::listen().map(Message::IcedEvent),
             iced::window::close_events().map(Message::WindowClosed),
-            iced_wayland_subscriber::listen(self.connection.clone())
-                .map(|message| Message::Wayland(message.into())),
+            iced_wayland_subscriber::output::listen(self.connection.clone()).filter_map(
+                |event| match event {
+                    OutputEvent::Insert(output) => {
+                        Some(Message::Wayland(WayEvent::OutputInsert(output)))
+                    }
+                    OutputEvent::Stop(error) => {
+                        Some(Message::Wayland(WayEvent::Stop(error.to_string())))
+                    }
+                    // Changed/Removed need nothing here: the compositor closes
+                    // a destroyed output's layer surfaces, which arrives as
+                    // WindowClosed.
+                    _ => None,
+                },
+            ),
         ])
     }
 
@@ -179,8 +182,13 @@ impl Counter {
                             let id = iced::window::Id::unique();
                             self.ids.insert(id, WindowInfo::PopUp);
                             return Command::done(Message::NewPopUp {
-                                settings: IcedNewPopupSettings::new(parent, (100, 100), (0, 0, 1, 1))
-                                    .gravity(PopupGravity::TopRight),
+                                settings: IcedNewPopupSettings::new(
+                                    parent,
+                                    PixelSize::px(100, 100),
+                                    (0, 0),
+                                    PixelSize::px(1, 1),
+                                )
+                                .gravity(PopupGravity::TopRight),
                                 id,
                             });
                         }
@@ -189,7 +197,11 @@ impl Counter {
                 }
                 Command::none()
             }
-            Message::Wayland(WayEvent::OutputInsert(OutputInfo { wl_output, .. })) => {
+            Message::Wayland(WayEvent::Stop(error)) => {
+                eprintln!("output subscription stopped: {error}");
+                Command::none()
+            }
+            Message::Wayland(WayEvent::OutputInsert(output)) => {
                 let id = iced::window::Id::unique();
                 self.ids.insert(id, WindowInfo::TopBar);
                 Command::done(Message::NewLayerShell {
@@ -197,8 +209,8 @@ impl Counter {
                         anchor: Anchor::Left | Anchor::Right | Anchor::Top,
                         layer: Layer::Top,
                         exclusive_zone: Some(30),
-                        size: Some((0, 30)),
-                        output_option: OutputOption::Output(wl_output),
+                        size: LayerSize::fill_width(30),
+                        output_option: OutputOption::GlobalName(output.id),
                         ..Default::default()
                     },
                     id,
@@ -217,25 +229,25 @@ impl Counter {
                 Command::none()
             }
             Message::Direction(direction) => match direction {
-                WindowDirection::Left(id) => Command::done(Message::AnchorSizeChange {
+                WindowDirection::Left(id) => Command::done(Message::LayoutChange {
                     id,
-                    anchor: Anchor::Top | Anchor::Left | Anchor::Bottom,
-                    size: (400, 0),
+                    anchor: Anchor::Left,
+                    size: LayerSize::fill_height(400),
                 }),
-                WindowDirection::Right(id) => Command::done(Message::AnchorSizeChange {
+                WindowDirection::Right(id) => Command::done(Message::LayoutChange {
                     id,
-                    anchor: Anchor::Top | Anchor::Right | Anchor::Bottom,
-                    size: (400, 0),
+                    anchor: Anchor::Right,
+                    size: LayerSize::fill_height(400),
                 }),
-                WindowDirection::Bottom(id) => Command::done(Message::AnchorSizeChange {
+                WindowDirection::Bottom(id) => Command::done(Message::LayoutChange {
                     id,
-                    anchor: Anchor::Left | Anchor::Right | Anchor::Bottom,
-                    size: (0, 400),
+                    anchor: Anchor::Bottom,
+                    size: LayerSize::fill_width(400),
                 }),
-                WindowDirection::Top(id) => Command::done(Message::AnchorSizeChange {
+                WindowDirection::Top(id) => Command::done(Message::LayoutChange {
                     id,
-                    anchor: Anchor::Left | Anchor::Right | Anchor::Top,
-                    size: (0, 400),
+                    anchor: Anchor::Top,
+                    size: LayerSize::fill_width(400),
                 }),
             },
             Message::NewWindowLeft => {
@@ -243,7 +255,7 @@ impl Counter {
                 self.ids.insert(id, WindowInfo::Left);
                 Command::done(Message::NewLayerShell {
                     settings: NewLayerShellSettings {
-                        size: Some((100, 100)),
+                        size: LayerSize::px(100, 100),
                         exclusive_zone: None,
                         anchor: Anchor::Left | Anchor::Bottom,
                         layer: Layer::Top,
@@ -339,4 +351,58 @@ impl Counter {
         .into()
     }
 }
+```
+
+## Workspaces
+
+The subscriber also tracks `ext_workspace_manager_v1` when the compositor
+implements it. A snapshot of the whole workspace tree arrives as
+`WorkspaceEvent::Updated` once per compositor-side change. The
+protocol's `done` event is an atomic barrier, so the snapshot is never torn
+mid-update. If the protocol is absent you get a single `WorkspaceEvent::Unsupported`
+instead, and output events continue as normal. Both `Unsupported` and `Finished`
+end the subscription: neither is followed by anything, so the stream has nothing 
+left to deliver.
+
+```rust
+match event {
+    WorkspaceEvent::Updated(snapshot) => {
+        for group in &snapshot.groups {
+            // Which monitors this group covers.
+            let outputs = &group.outputs;
+            // The workspace to highlight for those monitors.
+            let active = snapshot.active_in(&group.id);
+            let _ = (outputs, active);
+        }
+        self.workspaces = Some(snapshot);
+    }
+    WorkspaceEvent::Unsupported => {
+        // Hide workspace UI.
+    }
+    _ => {}
+}
+```
+
+To switch workspace, call the request methods on a stored snapshot. Requests go
+straight onto the connection from wherever you call them, so `update()` is fine:
+
+```rust
+snapshot.activate(&workspace_id)?;
+```
+
+Each method checks the capability the compositor advertised and returns
+`RequestError::Unsupported` rather than doing nothing, because the compositor
+itself silently ignores requests it does not support.
+Also available: `deactivate`, `remove`, `assign` (which moves a
+workspace to another group, not a window) and `create_workspace`.
+
+See `iced_examples/workspace_bar` for a working bar.
+
+## Feature flags
+
+Because `ext_workspace_manager_v1` is not that widely supported,
+workspace subscription is behind the non-default `workspace` feature:
+
+```toml
+iced_wayland_subscriber = { version = "…", features = ["workspace"] }
 ```

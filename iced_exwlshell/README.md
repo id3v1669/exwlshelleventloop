@@ -18,7 +18,7 @@ Since iced cannot define custom system actions and custom system events now, tho
 
 If you use `Task::dnoe` or just send the message from `view`, which is the extra fields for custom actions. The message will never enter go back to update
 
-If you receive something like `Message::NewShell`, the message should be addressed in update filed, this is the custom events, you can get the ideneity of window id, and when it is removed, you should listen to the iced events to get the removed windows
+To learn about surfaces the runtime creates for you, set the `on_new_shell` hook, which maps the new surface to a message of your own before its first frame is drawn. For the same information asynchronously, pass a `iced_wayland_subscriber::shell::channel()` sender to `Settings::shell_broadcast` and subscribe from the receiver. When a window is removed, listen to the iced window events.
 
 ## Example
 
@@ -34,12 +34,13 @@ use iced_runtime::{Action, task};
 
 use iced_exwlshell::reexport::{
     Anchor, KeyboardInteractivity, Layer, LayerSize, NewLayerShellSettings, OutputOption, PixelSize,
-    PopupGravity, WlShellType,
+    PopupGravity,
 };
 use iced_exwlshell::settings::{LayerShellSettings, Settings, StartMode};
 use iced_exwlshell::to_exwlshell_message;
-use iced_exwlshell::{NewShellInfo, daemon};
-use iced_wayland_subscriber::{OutputInfo, WaylandEvent};
+use iced_exwlshell::daemon;
+use iced_wayland_subscriber::shell::{ShellInfo, ShellType};
+use iced_wayland_subscriber::{OutputInfo, output::OutputEvent};
 use wayland_client::Connection;
 
 pub fn main() -> Result<(), iced_exwlshell::Error> {
@@ -54,6 +55,9 @@ pub fn main() -> Result<(), iced_exwlshell::Error> {
     )
     .title(Counter::title)
     .subscription(Counter::subscription)
+    .on_new_shell(|info: ShellInfo| {
+        matches!(info.shell, ShellType::SessionLock).then(|| Message::LockAppeared(info.window))
+    })
     .settings(Settings {
         layer_settings: LayerShellSettings {
             size: LayerSize::fill_width(400),
@@ -96,17 +100,7 @@ enum WindowDirection {
 #[derive(Debug, Clone)]
 enum WayEvent {
     OutputInsert(OutputInfo),
-    #[allow(unused)]
     Stop(String),
-}
-
-impl From<WaylandEvent> for WayEvent {
-    fn from(value: WaylandEvent) -> Self {
-        match value {
-            WaylandEvent::Stop(e) => WayEvent::Stop(e.to_string()),
-            WaylandEvent::OutputInsert(output) => WayEvent::OutputInsert(output),
-        }
-    }
 }
 
 #[to_exwlshell_message]
@@ -122,6 +116,7 @@ enum Message {
     Direction(WindowDirection),
     IcedEvent(Event),
     Wayland(WayEvent),
+    LockAppeared(Id),
 }
 
 impl Counter {
@@ -168,8 +163,20 @@ impl Counter {
         iced::Subscription::batch(vec![
             event::listen().map(Message::IcedEvent),
             iced::window::close_events().map(Message::WindowClosed),
-            iced_wayland_subscriber::listen(self.connection.clone())
-                .map(|message| Message::Wayland(message.into())),
+            iced_wayland_subscriber::output::listen(self.connection.clone()).filter_map(
+                |event| match event {
+                    OutputEvent::Insert(output) => {
+                        Some(Message::Wayland(WayEvent::OutputInsert(output)))
+                    }
+                    OutputEvent::Stop(error) => {
+                        Some(Message::Wayland(WayEvent::Stop(error.to_string())))
+                    }
+                    // Changed/Removed need nothing here: the compositor closes
+                    // a destroyed output's layer surfaces, which arrives as
+                    // WindowClosed.
+                    _ => None,
+                },
+            ),
         ])
     }
 
@@ -209,7 +216,11 @@ impl Counter {
                 }
                 Command::none()
             }
-            Message::Wayland(WayEvent::OutputInsert(OutputInfo { wl_output, .. })) => {
+            Message::Wayland(WayEvent::Stop(error)) => {
+                eprintln!("output subscription stopped: {error}");
+                Command::none()
+            }
+            Message::Wayland(WayEvent::OutputInsert(output)) => {
                 let id = iced::window::Id::unique();
                 self.ids.insert(id, WindowInfo::TopBar);
                 Command::done(Message::NewLayerShell {
@@ -218,7 +229,7 @@ impl Counter {
                         layer: Layer::Top,
                         exclusive_zone: Some(30),
                         size: LayerSize::fill_width(30),
-                        output_option: OutputOption::Output(wl_output),
+                        output_option: OutputOption::GlobalName(output.id),
                         ..Default::default()
                     },
                     id,
@@ -281,11 +292,9 @@ impl Counter {
                 task
             }
             Message::Close(id) => task::effect(Action::Window(WindowAction::Close(id))),
-            // NOTE:VERY IMPORTANT, we use it to receive windows
-            Message::NewShell(NewShellInfo { id, shell }) => {
-                if matches!(shell, WlShellType::SessionLock) {
-                    self.ids.insert(id, WindowInfo::Lock);
-                }
+            // NOTE: this is how we learn about windows the runtime created.
+            Message::LockAppeared(id) => {
+                self.ids.insert(id, WindowInfo::Lock);
                 Command::none()
             }
             _ => unreachable!(),

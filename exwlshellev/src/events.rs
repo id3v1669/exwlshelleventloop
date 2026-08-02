@@ -80,6 +80,9 @@ pub enum OutputOption {
 
     OutputName(String),
 
+    /// The `wl_registry` global name, as carried by `iced_wayland_subscriber::OutputId`
+    GlobalName(u32),
+
     /// NOTE: The output should be in the same connection with the layershellev, that means if you
     /// want to pass a [wl_output::WlOutput] to create a new layershell, you need to pass your
     /// connection to layershellev first
