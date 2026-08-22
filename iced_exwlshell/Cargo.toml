@@ -46,3 +46,6 @@ mundy = { version = "0.2.1", optional = true }
 iced.workspace = true
 wayland-client.workspace = true
 tracing-subscriber.workspace = true
+
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+libc = "0.2"

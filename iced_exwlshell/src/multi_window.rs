@@ -300,6 +300,15 @@ where
     proxy: IcedProxy<Action<P::Message>>,
     time: Instant,
     keep_compositor_alive: bool,
+    malloc_trim_at: Option<Instant>,
+}
+
+/// Trim heap.
+fn malloc_trim() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    unsafe {
+        libc::malloc_trim(0);
+    }
 }
 
 impl<P, E, C> Context<P, E, C>
@@ -341,6 +350,7 @@ where
             messages: Default::default(),
             proxy,
             time: Instant::now(),
+            malloc_trim_at: None,
         }
     }
 
@@ -427,6 +437,11 @@ where
         );
         for (iced_id, action) in waiting_layer_shell_actions {
             self.handle_layer_shell_action(ev, iced_id, action);
+        }
+
+        if self.malloc_trim_at.is_some_and(|at| Instant::now() >= at) {
+            self.malloc_trim_at = None;
+            malloc_trim();
         }
 
         (ContextState::Context(self), None)
@@ -726,6 +741,8 @@ where
         if self.window_manager.is_empty() && !self.keep_compositor_alive {
             self.remove_compositor();
         }
+        // delayed otherwise other processes in libs might not finish
+        self.malloc_trim_at = Some(Instant::now() + Duration::from_secs(3));
     }
 
     fn handle_window_event(

@@ -1880,6 +1880,7 @@ dependencies = [
  "iced_renderer",
  "iced_runtime",
  "iced_wayland_subscriber",
+ "libc",
  "log",
  "mundy",
  "thiserror 2.0.20",
