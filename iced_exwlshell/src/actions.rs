@@ -12,18 +12,21 @@ use iced_core::window::Id as IcedId;
 
 use std::sync::Arc;
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Default)]
+#[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct IcedXdgWindowSettings {
     /// The initial window size.
     pub size: Option<PixelSize>,
     /// Request client-side decorations instead of the default server-side mode.
     pub client_side_decorations: bool,
+    /// The xdg `app_id`
+    pub app_id: Option<String>,
 }
 
 impl From<IcedXdgWindowSettings> for NewXdgWindowSettings {
     fn from(val: IcedXdgWindowSettings) -> Self {
         NewXdgWindowSettings {
             title: None,
+            app_id: val.app_id,
             size: val.size,
             client_side_decorations: val.client_side_decorations,
         }

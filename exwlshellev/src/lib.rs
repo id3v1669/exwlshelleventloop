@@ -3376,6 +3376,7 @@ impl<T: 'static, W: ExWlShellHandler<T>> EventContext<T, W> {
                             settings:
                                 NewXdgWindowSettings {
                                     title,
+                                    app_id,
                                     size,
                                     client_side_decorations,
                                 },
@@ -3387,6 +3388,10 @@ impl<T: 'static, W: ExWlShellHandler<T>> EventContext<T, W> {
                             let toplevel = wl_xdg_surface.get_toplevel(&qh, ());
 
                             toplevel.set_title(title.unwrap_or("".to_owned()));
+                            // before first commit so window rules can match it as init class.
+                            toplevel.set_app_id(
+                                app_id.unwrap_or_else(|| context.state.default_namespace.clone()),
+                            );
 
                             let decoration = if let Some(decoration_manager) =
                                 &zxdg_decoration_manager

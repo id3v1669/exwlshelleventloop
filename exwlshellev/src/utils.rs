@@ -137,6 +137,8 @@ pub struct PopUpRepositionSettings {
 pub struct NewXdgWindowSettings {
     /// The window title.
     pub title: Option<String>,
+    /// The xdg `app_id`
+    pub app_id: Option<String>,
     /// The initial window size.
     pub size: Option<PixelSize>,
     /// Request client-side decorations instead of the default server-side mode.
