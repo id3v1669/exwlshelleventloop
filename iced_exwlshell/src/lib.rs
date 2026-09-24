@@ -9,6 +9,7 @@ mod event;
 mod multi_window;
 mod proxy;
 pub mod redraw;
+pub mod scroll;
 mod user_interface;
 
 pub mod settings;

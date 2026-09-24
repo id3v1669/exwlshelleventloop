@@ -1222,6 +1222,7 @@ pub struct WindowState<T> {
 
     pending_requests: Vec<Request<T>>,
     finger_locations: HashMap<i32, (f64, f64)>,
+    pending_pointer_frames: HashMap<ObjectId, seat::PointerFrame>,
     enter_serial: Option<u32>,
     popup_grab_serial: Option<u32>,
 
@@ -1793,6 +1794,7 @@ impl<T> Default for WindowState<T> {
 
             pending_requests: Vec::new(),
             finger_locations: HashMap::new(),
+            pending_pointer_frames: HashMap::new(),
             enter_serial: None,
             popup_grab_serial: None,
 
